@@ -53,7 +53,7 @@ double polylineMinEdgeLength(SimplePolyLine const& line, bool is_closed)
 
         previous_vertex = current_vertex;
     }
-    
+
     return shortest_edge_length;
 }
 
@@ -64,10 +64,12 @@ double polylineLength(SimplePolyLine const& line, bool is_closed)
         return 0;
     }
 
+    std::size_t end_idx = is_closed ? line_size + 1 : line_size;
     double total_length = 0.;
+
     OpenMesh::DefaultTraitsDouble::Point previous_vertex = line[0];
-    for (std::size_t current_vertex_idx = 1; current_vertex_idx < line_size; ++current_vertex_idx) {
-        OpenMesh::DefaultTraitsDouble::Point current_vertex = line[current_vertex_idx];
+    for (std::size_t current_vertex_idx = 1; current_vertex_idx < end_idx; ++current_vertex_idx) {
+        OpenMesh::DefaultTraitsDouble::Point current_vertex = line[current_vertex_idx % line_size];
 
         double current_segment_length = (current_vertex - previous_vertex).length();
         total_length += current_segment_length;
@@ -105,18 +107,18 @@ Point compute_circumcenter(const Point& p0, const Point& p1, const Point& p2) {
     // II:  |circumcenter - p2| = |circumcenter - p1|   (I + II: all points have equal distance to circumcenter)
     // III: plane_normal * (circumcenter - p1) = 0      (circumcenter must lie in the triangle's plane)
     //
-    // Linear system follows from expanding the expressions and bringing 
+    // Linear system follows from expanding the expressions and bringing
     // all terms that depend on circumcenter's coordinates on the left-hand side and bringing
     // all terms that are independent of those coordinates on the right-hand side
 
     ACG::Matrix3x3d cramer_matrix = ACG::Matrix3x3d::fromRows(
-        2 * (p0 - p1), 
-        2 * (p2 - p1), 
+        2 * (p0 - p1),
+        2 * (p2 - p1),
         plane_normal);
 
     ACG::Vec3d cramer_vector(
-        p0.sqrnorm() - p1.sqrnorm(), 
-        p2.sqrnorm() - p1.sqrnorm(), 
+        p0.sqrnorm() - p1.sqrnorm(),
+        p2.sqrnorm() - p1.sqrnorm(),
         plane_normal.dot(p1));
 
     double cramer_determinant = cramer_matrix.det();
@@ -125,21 +127,21 @@ Point compute_circumcenter(const Point& p0, const Point& p1, const Point& p2) {
     }
 
     double circumcenter_x = ACG::Matrix3x3d::fromColumns(
-        cramer_vector, 
-        cramer_matrix.getCol(1), 
+        cramer_vector,
+        cramer_matrix.getCol(1),
         cramer_matrix.getCol(2)
     ).det() / cramer_determinant;
 
     double circumcenter_y = ACG::Matrix3x3d::fromColumns(
-        cramer_matrix.getCol(0), 
+        cramer_matrix.getCol(0),
         cramer_vector,
         cramer_matrix.getCol(2)
     ).det() / cramer_determinant;
 
     double circumcenter_z = ACG::Matrix3x3d::fromColumns(
-        cramer_matrix.getCol(0), 
+        cramer_matrix.getCol(0),
         cramer_matrix.getCol(1),
-        cramer_vector 
+        cramer_vector
     ).det() / cramer_determinant;
 
     return Point(circumcenter_x, circumcenter_y, circumcenter_z);
@@ -150,7 +152,7 @@ CurveSmoothingPlugin::
 smoothLaplacian(SimplePolyLine const& input, SimplePolyLine &output, bool closed, double eps)
 {
     assert (&input != &output);
-    
+
     int line_size = input.size();
     int end_idx = line_size + 1;
 
@@ -159,7 +161,7 @@ smoothLaplacian(SimplePolyLine const& input, SimplePolyLine &output, bool closed
         output[0] = input[0];
         output[line_size - 1] = input[line_size - 1];
     }
-    
+
     for (int current_vertex_idx = 1; current_vertex_idx < end_idx; ++current_vertex_idx) {
         OpenMesh::DefaultTraitsDouble::Point previous_neighbor = input[current_vertex_idx - 1];
         OpenMesh::DefaultTraitsDouble::Point current_vertex = input[current_vertex_idx % line_size];
@@ -223,7 +225,7 @@ void CurveSmoothingPlugin::initializePlugin()
 
     // (re-) create curve when curve generation settings are changed or button is pressed:
     connect(tool_->btn_random_curve, &QPushButton::clicked, this, &CurveSmoothingPlugin::slotCreateRandomCurve);
-    connect(tool_->sb_npoints, &QSpinBox::valueChanged, this, &CurveSmoothingPlugin::slotCreateRandomCurve); 
+    connect(tool_->sb_npoints, &QSpinBox::valueChanged, this, &CurveSmoothingPlugin::slotCreateRandomCurve);
     connect(tool_->cb_closed, &QCheckBox::toggled, this, &CurveSmoothingPlugin::slotCreateRandomCurve);
     connect(tool_->cb_curve2d, &QCheckBox::toggled, this, &CurveSmoothingPlugin::slotCreateRandomCurve);
     connect(tool_->sb_seed, &QSpinBox::valueChanged, this, &CurveSmoothingPlugin::slotCreateRandomCurve);
