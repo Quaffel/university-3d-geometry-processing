@@ -100,19 +100,8 @@ static double compute_angle(TriMesh const& _mesh, HEH _heh)
     auto source_side = (_mesh.point(heh.from()) - target_vertex);
     auto next_side = (_mesh.point(heh.next().to()) - target_vertex);
 
-    // TODO: compute the angle of corner heh.to() in the face heh.face()
-    // Hint: use cross- and dot product to determine sin(alpha) and cos(alpha),
-    // then use std::atan2 (Q: why not acos() or asin()?)
-    // Although OpenMesh has built-in functionality to compute angles, do NOT use it.
-
-    /* 
-    double atan_angle = std::atan2(source_side.cross(next_side).norm(), source_side.dot(next_side));
-    double acos_angle = std::acos(source_side.dot(next_side) / (source_side.norm() * next_side.norm()));
-    double asin_angle = std::asin(source_side.cross(next_side).norm() / (source_side.norm() * next_side.norm()));
-
-    std::cout << "atan: " << atan_angle << " acos: " << acos_angle << " asin: " << asin_angle << std::endl;
-    */
-
+    // asin is not applicable here as image of asin is [- 1/2 pi, 1/2 pi]; generates when dealing with obtuse triangles
+    // acos is not applicable here despite suitable image due to numerical stability
     return std::atan2(source_side.cross(next_side).norm(), source_side.dot(next_side));
 }
 
