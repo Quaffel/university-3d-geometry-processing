@@ -8,7 +8,6 @@
 #include "ui_NormalsAndCurvatureToolbarBase.h"
 
 #include <cmath>
-#include <vector>
 
 using VH = OpenMesh::VertexHandle;
 using EH = OpenMesh::EdgeHandle;
@@ -95,19 +94,40 @@ public:
 static double compute_angle(TriMesh const& _mesh, HEH _heh)
 {
     auto heh = _mesh.make_smart(_heh);
+    auto target_vertex_handle = heh.to();
+    auto target_vertex = _mesh.point(target_vertex_handle);
+
+    auto source_side = (_mesh.point(heh.from()) - target_vertex);
+    auto next_side = (_mesh.point(heh.next().to()) - target_vertex);
+
     // TODO: compute the angle of corner heh.to() in the face heh.face()
     // Hint: use cross- and dot product to determine sin(alpha) and cos(alpha),
     // then use std::atan2 (Q: why not acos() or asin()?)
     // Although OpenMesh has built-in functionality to compute angles, do NOT use it.
-    return 1234;
+
+    /* 
+    double atan_angle = std::atan2(source_side.cross(next_side).norm(), source_side.dot(next_side));
+    double acos_angle = std::acos(source_side.dot(next_side) / (source_side.norm() * next_side.norm()));
+    double asin_angle = std::asin(source_side.cross(next_side).norm() / (source_side.norm() * next_side.norm()));
+
+    std::cout << "atan: " << atan_angle << " acos: " << acos_angle << " asin: " << asin_angle << std::endl;
+    */
+
+    return std::atan2(source_side.cross(next_side).norm(), source_side.dot(next_side));
 }
 
 static double compute_area(TriMesh const& _mesh, FH _fh)
 {
     auto fh = _mesh.make_smart(_fh);
-    // TODO: compute the face area.
-    // Although OpenMesh has built-in functionality to compute aras, do NOT use it.
-    return 1234;
+    OpenMesh::SmartHalfedgeHandle first_halfedge = fh.halfedge();
+    OpenMesh::SmartHalfedgeHandle second_halfedge = first_halfedge.next();
+
+    auto first_side = _mesh.point(first_halfedge.to()) - _mesh.point(first_halfedge.from());
+    auto second_side = _mesh.point(second_halfedge.to()) - _mesh.point(second_halfedge.from());
+
+    double parallelogram_area = first_side.cross(second_side).norm();
+
+    return 0.5 * parallelogram_area;
 }
 
 /// Compute cotan of triangle corner that heh points to (i.e. heh.to() in heh.face())
@@ -117,9 +137,13 @@ static double compute_cotan(TriMesh const& _mesh, HEH _heh)
     const Vec3d &p0 = _mesh.point(heh.from());
     const Vec3d &p1 = _mesh.point(heh.to()); // this is the corner whose cotan we want
     const Vec3d &p2 = _mesh.point(heh.next().to());
-    // TODO: compute the cotan of the angle in the face heh.face() at the corner heh.to()
-    // Hint: you do NOT need to compute the angle itself, or
-    //       call any trigonometric functions like sin(), cos(), or tan().
+
+    auto first_side = p0 - p1;
+    auto second_side = p2 - p1;
+
+    // It holds that 'cotan(alpha) = cos(alpha) / sin(alpha).
+    // We also know that 'dot(u, v) = |u| * |v| * cos(angle(u,v))' and '|cross(u, v)| = |u| * |v| * sin(angle(u,v))'.
+    return first_side.dot(second_side) / first_side.cross(second_side).norm();
 }
 
 static double compute_cotan_weight(TriMesh const& _mesh, EH _eh)
@@ -138,11 +162,13 @@ static double compute_cotan_weight(TriMesh const& _mesh, EH _eh)
 static Vec3d compute_normal(TriMesh const& _mesh, FH _fh)
 {
     auto fh = _mesh.make_smart(_fh);
-    // TODO: Compute a unit normal vector for face _fh. Its orientation should be
-    //       such that it points outwards on meshes where face vertices are
-    //       ordered counter-clockwise (all supplied closed meshes follow this convention).
-    //       If your mesh gets rendered strangely dark, your normal might be flipped or non-normalized.
-    return Vec3d(0.);
+    OpenMesh::SmartHalfedgeHandle first_halfedge = fh.halfedge();
+    OpenMesh::SmartHalfedgeHandle second_halfedge = first_halfedge.next();
+
+    auto first_side = _mesh.point(first_halfedge.to()) - _mesh.point(first_halfedge.from());
+    auto second_side = _mesh.point(second_halfedge.to()) - _mesh.point(second_halfedge.from());
+
+    return first_side.cross(second_side).normalized();
 }
 
 void NormalsAndCurvaturePlugin::initializePlugin()
@@ -236,11 +262,18 @@ void NormalsAndCurvaturePlugin::computeVertexNormals(TriMesh &_mesh, VertexNorma
                 mcn = -mcn;
             }
             const auto k_norm = mcn.norm();
-            if (std::isfinite(k_norm)) {
-                _mesh.set_normal(vh, mcn / k_norm);
-            } else {
+            if (!std::isfinite(k_norm)) {
+                 std::cout << "found degenerate vertex" << std::endl;
                 _mesh.set_normal(vh, Vec3d(0.0));
+                continue;
             }
+
+            if (k_norm < 1) {
+                std::cout << "found close-to-zero vertex" << std::endl;
+                _mesh.status(vh).set_selected(true);
+            }
+
+            _mesh.set_normal(vh, mcn / k_norm);
         }
     }
 }
@@ -267,21 +300,43 @@ NormalsAndCurvaturePlugin::
 computeGaussianCurvature(TriMesh &_mesh)
 {
     auto gaussian_curv = OpenMesh::getOrMakeProperty<VH, double>(_mesh, PropNames::gaussian_curvature);
-    auto integrated_gauss_curv = OpenMesh::getOrMakeProperty<VH, double>(_mesh, PropNames::angle_defect);
-
     gaussian_curv.set_range(_mesh.vertices(), 0.);
+    
+    auto integrated_gauss_curv = OpenMesh::getOrMakeProperty<VH, double>(_mesh, PropNames::angle_defect);
     integrated_gauss_curv.set_range(_mesh.vertices(), 0.);
+
     const auto vertex_area = computeVertexAreas(_mesh);
+
     double total_angle_defect = 0.;
     for (auto vh: _mesh.vertices()) {
+        if (vh.is_boundary()) {
+            integrated_gauss_curv[vh] = 0;
+            gaussian_curv[vh] = 0;
+            continue;
+        }
+
         double angle_sum = 0.;
-    // TODO:
-    //  - compute integrated_gauss_curv[vh]
-    //  - compute gaussian_curv[vh]
-    //  - add to total_angle_defect
-    // Notes:
-    //  - You can use compute_angle() defined above
-    //  - You can set the curvature to zero at boundary vertices.
+        OpenMesh::SmartHalfedgeHandle initialHalfEdge = vh.halfedge().opp();
+        OpenMesh::SmartHalfedgeHandle current_halfedge = initialHalfEdge;
+        while (true) {
+            double vertex_face_angle = compute_angle(_mesh, current_halfedge);
+            angle_sum += vertex_face_angle;
+
+            current_halfedge = current_halfedge.next().opp();
+            if (current_halfedge.idx() == initialHalfEdge.idx()) {
+                break;
+            }
+        }
+
+        double angular_defect = 2 * M_PI - angle_sum;
+        if (std::abs(angular_defect) < 1e-10) {
+            angular_defect = 0;
+        }
+
+        integrated_gauss_curv[vh] = angular_defect;
+        gaussian_curv[vh] = angular_defect / vertex_area[vh];
+
+        total_angle_defect += angular_defect;
     }
     emit log(LOGINFO, "Total angle defect: 2π * " + QString::number(total_angle_defect/(2*M_PI)));
 
@@ -297,16 +352,27 @@ computeMeanCurvature(TriMesh &_mesh, LaplacianWeights _lap_kind)
 
     for (auto vh: _mesh.vertices()) {
         const auto mcn = mean_curv_normal[vh];
-        const auto k_norm = mcn.norm();
-        if (!vh.is_boundary() && std::isfinite(k_norm))
-        {
-            // TODO: compute mean_curv[vh] from mean_curv_normal[vh].
-            //       Make sure to determine the correct sign!
-            //       For this purpose, you can access vertex normals using _mesh.normal(vh)
-            mean_curv[vh] = 1234.;
-        } else {
-            mean_curv[vh] = 0.;
+        const auto mcn_norm = mcn.norm();
+        if (vh.is_boundary() || !std::isfinite(mcn_norm)) {
+            continue;
         }
+
+        // For the (continuous) laplace-beltrami operator, it holds that
+        //      mcn             = -2 H n
+        //      -0.5 mcn        = H n
+        // We assume that the same approximately holds for its discretization.
+        // Since the norm vector is of normal length, we observe that
+        //      | -0.5 mcn |    = H
+        //
+        // As for the sign of H: We note that H is a scalar.
+        // This means that the vectors 'mcn' and 'n' necessarily lie within the same line space
+        // (i.e., they point into the same or in opposite directions).
+        // For their dot product, it therefore holds that '<mcn, n> = |mcn| * cos(<mcn, n>)'.
+        // This gives an efficient way to determine the norm of 'mcn' and to retrieve the sign in one operation.
+        const OpenMesh::Vec3d vertex_normal = _mesh.normal(vh);
+        assert(std::abs(vertex_normal.norm() - 1) < 1e-2);
+
+        mean_curv[vh] = 0.5 * dot(mcn, vertex_normal);
     }
 
     return mean_curv;
@@ -365,9 +431,26 @@ computeMinMaxCurvature(TriMesh &_mesh, LaplacianWeights _lap_kind)
         }
         const double H = prop_mean[vh];     // H = .5 * (k_1 + k_2)
         const double K = prop_gaussian[vh]; // K = k_1 * k_2
-    // TODO: compute k_1 and k_2 from H and K,
-    //       set min_prop[vh] and max_prop[vh] to k_1 and k_2.
+
+        // Mean (H) and Gauss curvature (G) are defined as:
+        //      H = 0.5 * (k_1 + k_2)
+        //      K = k_1 * k_2
+        // Solving for k_1 yields:
+        //      k_1 = 2 H - k_2
+        //      k_1 = K / k_2
+        // Eliminating k_1 and slightly rearranging the terms then yields a quadratic expression:
+        //      k_2^2 - 2 H k_2 + K = 0
+        // We can solve for the roots of this expression using the abc-formula:
+        //      k_{11, 12} = H +- sqrt(H^2 - K)
+        // Note that the expression is independent of k_2.
+        // Initially solving for k_2 rather than k_1 yields the same expression.
+        // It turns out that the first root is the solution of k_1, the other root the solution of k_2.
+        double sqrt_term = std::sqrt(std::max(0.0, H * H - K));
+
+        min_prop[vh] = H - sqrt_term;
+        max_prop[vh] = H + sqrt_term;
     }
+
     return std::make_pair(min_prop, max_prop);
 }
 
@@ -451,12 +534,14 @@ computeCotanWeights(TriMesh& _mesh)
         if (w < 0) {
             ++n_edges_with_negative_weight;
             // optionally highlight problematic edges:
-            //_mesh.status(eh).set_selected(true);
+            // _mesh.status(eh).set_selected(true);
         }
         cotan_weight[eh] = w;
     }
-    emit log(LOGWARN, "We have " +
-            QString::number(n_edges_with_negative_weight)
+    emit log(LOGWARN, "We have "
+            + QString::number(n_edges_with_negative_weight)
+            + " out of "
+            + QString::number(_mesh.n_edges())
             + " edges with negative cotan weights (obtuse corners).");
     return cotan_weight;
 }
