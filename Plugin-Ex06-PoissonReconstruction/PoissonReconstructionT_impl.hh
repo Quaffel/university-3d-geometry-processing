@@ -51,25 +51,32 @@
 template<typename MeshT>
 struct OpenMeshPolygonStream : public PoissonRecon::Reconstructor::OutputFaceStream< 2>
 {
-    OpenMeshPolygonStream(MeshT &_out_mesh) : mesh_(_out_mesh) {}
+    OpenMeshPolygonStream(MeshT &_out_mesh) : mesh_(_out_mesh), current_polygon_idx(0) {}
 
     size_t size() const override {
-        // TODO: implement this member function
-        //
-        // Read the PoissonRecon readme section on "HEADER-ONLY LIBRARY" which
-        // describes the stream interface we'll interface with:
-        // https://github.com/mkazhdan/PoissonRecon/blob/cd6dc7d33f028b2e6496f5cd999c25cecd56aff2/README.md
-        return 0;
+        return current_polygon_idx;
     }
+
     size_t write(const std::vector< PoissonRecon::node_index_type> &polygon) override
     {
-        // TODO: implement this member function
-        // cf. https://github.com/mkazhdan/PoissonRecon/blob/cd6dc7d33f028b2e6496f5cd999c25cecd56aff2/Src/Reconstruction.example.cpp#L226
-        return 0;
+        assert(polygon.size() >= 3);
+
+        std::vector<OpenMesh::VertexHandle> polygon_vertex_handles {};
+        polygon_vertex_handles.reserve(polygon.size());
+        
+        for (std::size_t vertex_idx = 0; vertex_idx < polygon.size(); ++vertex_idx) {
+            OpenMesh::VertexHandle vertex_handle {polygon[vertex_idx]};
+            polygon_vertex_handles.push_back(vertex_handle);
+        }
+
+        mesh_.add_face(polygon_vertex_handles);
+
+        return current_polygon_idx++;
     }
 
 protected:
     MeshT &mesh_;
+    int current_polygon_idx;
 };
 
 // A stream into which we can write the output vertices of the extracted mesh
@@ -90,12 +97,20 @@ struct OpenMeshVertexStream : public PoissonRecon::Reconstructor::OutputLevelSet
             const PoissonRecon::Point< Real, Dim> & grad,
             const Real & weight) override
     {
-        // TODO: implement this member function.
-        // Add the vertex to the mesh,
-        // compute and set (mesh_.set_normal(vh, n)) a vertex normal using the supplied gradient,
-        // and save the weight value to the weight_ property.
-        // cf. https://github.com/mkazhdan/PoissonRecon/blob/cd6dc7d33f028b2e6496f5cd999c25cecd56aff2/Src/Reconstruction.example.cpp#L246
-        return 0;
+        typename MeshT::Point vertex_point {};
+        typename MeshT::Normal vertex_normal {};
+
+        for (std::size_t coordinate_idx = 0; coordinate_idx < Dim; ++coordinate_idx) {
+            vertex_point[coordinate_idx] = pos[coordinate_idx];
+            vertex_normal[coordinate_idx] = grad[coordinate_idx];
+        }
+
+        OpenMesh::VertexHandle vertex_handle = mesh_.add_vertex(vertex_point);
+        mesh_.set_normal(vertex_handle, vertex_normal);
+        weight_[vertex_handle] = weight;
+
+        assert(vertex_handle.idx() == mesh_.n_vertices() - 1);
+        return vertex_handle.idx();
     }
 protected:
     MeshT &mesh_;
@@ -108,15 +123,24 @@ struct PackedSampleStream : public PoissonRecon::Reconstructor::InputOrientedSam
     using PRPoint = PoissonRecon::Point<Real, Dim>;
     PackedSampleStream(std::vector<Real> const& _data)
         : data_(_data)
-    {}
+    {
+        assert(_data.size() % 6 == 0);
+    }
 
     void reset() override{ idx_ = 0;}
 
     bool read(PRPoint &p, PRPoint &n) override
     {
-        // TODO: implement this member function to pass one entry of the packed data to PoissonRecon
-        // cf. https://github.com/mkazhdan/PoissonRecon/blob/cd6dc7d33f028b2e6496f5cd999c25cecd56aff2/Src/Reconstruction.example.cpp#L138
-        return false;
+        for (std::size_t coordinate_idx = 0; coordinate_idx < Dim; ++coordinate_idx) {
+            p[coordinate_idx] = data_[idx_ * 6 + coordinate_idx];
+        }
+
+        for (std::size_t normal_idx = 0; normal_idx < Dim; ++normal_idx) {
+            n[normal_idx] = data_[idx_ * 6 + Dim + normal_idx];
+        }
+
+        idx_++;
+        return idx_ * 6 < data_.size();
     }
 
 protected:
