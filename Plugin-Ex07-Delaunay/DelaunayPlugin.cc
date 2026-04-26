@@ -15,10 +15,11 @@ using Vec3d = ACG::Vec3d;
 using Vec2d = ACG::Vec2d;
 
 bool is_delaunay(TriMesh const& _mesh, TriMesh::EdgeHandle _eh) {
-
     OpenMesh::SmartEdgeHandle eh = _mesh.make_smart(_eh);
 
-    /* These are the four points of the triangles incident to edge "_eh":
+    /* 
+        We assume that the provided edge '_eh' (here depicted through its halfedge 'h0') is incident to two triangles.
+        We establish the following naming convention:
 
                        (d) = h0.next.to
                       /   \
@@ -29,7 +30,9 @@ bool is_delaunay(TriMesh const& _mesh, TriMesh::EdgeHandle _eh) {
                      \     /
                       \   /
                        (b) = h1.next.to
-     */
+    */
+    assert(eh.h1().next().is_valid());
+    assert(eh.h0().next().is_valid());
 
     Vec3d const& a = _mesh.point(eh.h0().from());
     Vec3d const& b = _mesh.point(eh.h1().next().to());
@@ -37,11 +40,26 @@ bool is_delaunay(TriMesh const& _mesh, TriMesh::EdgeHandle _eh) {
     Vec3d const& d = _mesh.point(eh.h0().next().to());
 
     // We assume that this is a 2-D mesh with all z coordinates = 0
+    assert(a[2] == 0);
+    assert(b[2] == 0);
+    assert(c[2] == 0);
+    assert(d[2] == 0);
 
-    // TODO: Add your code here
-    // is the edge _eh delaunay?
-    // -> circum-circle test of the four points (a,b,c,d)
-    return true;
+    const auto square_distance_to_origin = [](const Vec3d& p) {
+        return p[0] * p[0] + p[1] * p[1];
+    };
+
+    // ACG matrices are initialized through a column-major array
+    const double open_mesh_data[16] = {
+        a[0], b[0], c[0], d[0],
+        a[1], b[1], c[1], d[1],
+        square_distance_to_origin(a), square_distance_to_origin(b), 
+            square_distance_to_origin(c), square_distance_to_origin(d),
+        1.0,  1.0,  1.0,  1.0
+    };
+    ACG::Matrix4x4d incircle_test_matrix {open_mesh_data};
+
+    return incircle_test_matrix.determinant() <= 0;
 }
 
 /// Insert point into planar (z=0) delaunay mesh and re-establish delaunay
@@ -49,11 +67,21 @@ bool is_delaunay(TriMesh const& _mesh, TriMesh::EdgeHandle _eh) {
 size_t insert_point(TriMesh & _mesh, const TriMesh::FaceHandle& _fh,
         const TriMesh::EdgeHandle& _eh, const TriMesh::Point& _p)
 {
-
     // add vertex, assign random color to it
     auto p = TriMesh::Point(_p[0], _p[1], 0.0);
     auto vh = _mesh.add_vertex(p);
 
+    /*
+        The newly inserted vertex 'v' is inserted into an already existing triangle.
+        
+             (d)
+            / | \
+           / (v) \
+          / /   \ \
+        (a)-------(c)
+
+        Note that if 'v' falls onto an edge, we perform a 2:4 split instead.
+    */
     if (_eh.is_valid()) {
         _mesh.split(_eh, vh);
     } else if (_fh.is_valid()) {
@@ -61,14 +89,58 @@ size_t insert_point(TriMesh & _mesh, const TriMesh::FaceHandle& _fh,
     } else {
         return 0;
     }
+    
     size_t n_flips = 0;
     std::queue<TriMesh::EdgeHandle> edges_to_check;
-    // TODO: re-establish Delaunay property
-    // ... find edges opposite to the inserted vertex
-    // ... add them to queue
-    // ... are these edges ok? otherwise: flip'em
-    //      after flipping, add edges to the queue whose incident triangles were changed
-    //      by the flip to re-check them.
+
+    /* 
+        To ensure that the mesh remains delaunay even after the insertion, we first need to check
+        the delaunay property for all edges opposite to the newly inserted vertex.
+        These edges are ac, cd, and ad.
+        Note that there are 4 opposite edges in case of a 2:4 split.
+    */
+    for (OpenMesh::SmartHalfedgeHandle edge : vh.outgoing_halfedges()) {
+        OpenMesh::EdgeHandle opposite_edge = edge.next().edge();
+        edges_to_check.push(opposite_edge);
+    }
+
+    /* Iteratively check for Delaunay property for all edges, and flip them if property is currently not satisfied.
+        Edges that can be flipped are incident to two triangles.
+        We establish the following naming convention ('current_edge' is depicted through halfedge 'h0'):
+
+                       (d) = h0.next.to
+                      /   \
+                     /     \
+                    /       \
+        h0.from = (a)--h0-->(c) = h0.to
+                    \       /
+                     \     /
+                      \   /
+                       (b) = h1.next.to
+    */
+    for (; !edges_to_check.empty(); edges_to_check.pop()) {
+        OpenMesh::EdgeHandle current_edge = edges_to_check.front();
+        if (is_delaunay(_mesh, current_edge)) {
+            continue;
+        }
+
+        if (!_mesh.is_flip_ok(current_edge)) {
+            continue;
+        }
+
+        _mesh.flip(current_edge);
+        n_flips++;
+
+        OpenMesh::SmartHalfedgeHandle current_halfedge_h0 = _mesh.make_smart(current_edge).h0();
+        OpenMesh::SmartHalfedgeHandle current_halfedge_h1 = _mesh.make_smart(current_edge).h1();
+
+        edges_to_check.push(current_halfedge_h0.next().edge());
+        edges_to_check.push(current_halfedge_h0.next().next().edge());
+
+        edges_to_check.push(current_halfedge_h1.next().edge());
+        edges_to_check.push(current_halfedge_h1.next().next().edge());
+    }
+
     _mesh.garbage_collection();
     return n_flips;
 }
