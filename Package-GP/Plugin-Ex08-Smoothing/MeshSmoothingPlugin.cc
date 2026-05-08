@@ -430,8 +430,8 @@ static Eigen::MatrixXd apply_feature_enhancement(
                                       Eigen::MatrixXd const& smoothed_positions,
                                       double alpha)
 {
-    // TODO: implement feature enhancement
-    return smoothed_positions;
+    // 'original_positions - smoothened_positions' represents high-frequency features
+    return smoothed_positions + alpha * (original_positions - smoothed_positions);
 }
 
 void MeshSmoothingPlugin::smooth(
@@ -463,7 +463,6 @@ void MeshSmoothingPlugin::smooth(
 
         auto vol_after = compute_mesh_volume(mesh, new_pos);
         std::cout << "volume    before: " << vol_before << "    after: " << vol_after << "  diff:" << (vol_after - vol_before) << std::endl;
-
     }
 
     if (settings.feature_enhance_alpha != 0) {
