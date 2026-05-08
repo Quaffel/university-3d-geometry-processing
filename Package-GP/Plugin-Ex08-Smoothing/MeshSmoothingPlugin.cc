@@ -1,4 +1,5 @@
 #include "MeshSmoothingPlugin.hh"
+#include "Eigen/Core"
 #include "OpenMesh/Core/Utils/Predicates.hh"
 #include <ObjectTypes/TriangleMesh/PluginFunctionsTriangleMesh.hh>
 #include <OpenMesh/Core/Utils/PropertyManager.hh>
@@ -133,6 +134,60 @@ inline double compute_cotan_weight(OpenMesh::TriMesh const& _mesh,
     return 0.5 * w;
 }
 
+inline Eigen::DiagonalMatrix<double, -1> setup_laplacian_diagonal(LaplacianWeights _kind,
+        OpenMesh::TriMesh const& _mesh,
+        Eigen::MatrixXd const &_positions) {
+    Eigen::VectorXd vertex_weights;
+    if (_kind == LaplacianWeights::Cotan) {
+        Eigen::VectorXd vertex_areas = computeVertexAreas(AreaFormulation::MixedVoronoi, _mesh, _positions);
+        vertex_weights = (2.0 * vertex_areas).cwiseInverse();
+    } else {
+        assert(_kind == LaplacianWeights::Uniform);
+        vertex_weights.resize(_mesh.n_vertices());
+        for (const auto vh : _mesh.vertices()) {
+            vertex_weights[vh.idx()] = 1.0 / _mesh.valence(vh);
+        }
+    }
+
+    return vertex_weights.asDiagonal();
+}
+
+inline SpMat setup_laplacian_coefficients(LaplacianWeights _kind,
+        OpenMesh::TriMesh const& _mesh,
+        Eigen::MatrixXd const &_positions) {
+    SpMat L {static_cast<Eigen::Index>(_mesh.n_vertices()), static_cast<Eigen::Index>(_mesh.n_vertices())};
+    std::vector<Eigen::Triplet<double>> triplets;
+
+    // reserve: pre-allocate the right amount of memory to avoid re-allocation when adding elements to the vector
+    triplets.reserve(_mesh.n_edges() * 2 + _mesh.n_vertices());
+
+    for (OpenMesh::SmartVertexHandle current_vertex : _mesh.vertices()) {
+        int current_vertex_idx = current_vertex.idx();
+        
+        double current_weight_sum = 0;
+        for (OpenMesh::SmartHalfedgeHandle current_halfedge : current_vertex.outgoing_halfedges()) {
+            OpenMesh::SmartVertexHandle current_neighbor = current_halfedge.to();
+
+            double current_neighbor_weight;
+            if (_kind == LaplacianWeights::Cotan) {
+                current_neighbor_weight = compute_cotan_weight(_mesh, current_halfedge.edge(), _positions);
+            } else {
+                assert(_kind == LaplacianWeights::Uniform);
+                current_neighbor_weight = 1;
+            }
+
+            double current_neighbor_value = current_neighbor_weight;
+
+            triplets.push_back({current_vertex_idx, current_neighbor.idx(), current_neighbor_value});
+            current_weight_sum += current_neighbor_value;
+        }
+
+        triplets.push_back({current_vertex_idx, current_vertex_idx, -current_weight_sum});
+    }
+
+    L.setFromTriplets(triplets.begin(), triplets.end());
+    return L;
+}
 
 inline SpMat setup_laplacian(
         LaplacianWeights _kind,
@@ -149,52 +204,10 @@ inline SpMat setup_laplacian(
             M_ij    =   negative sum of all cotan weights                   if  i = j
                         0                                                   otherwise
     */
-    SpMat L {static_cast<Eigen::Index>(_mesh.n_vertices()), static_cast<Eigen::Index>(_mesh.n_vertices())};
-    std::vector<Eigen::Triplet<double>> triplets;
+    SpMat L = setup_laplacian_coefficients(_kind, _mesh, _positions);
+    Eigen::DiagonalMatrix<double, -1> D = setup_laplacian_diagonal(_kind, _mesh, _positions);
 
-    // reserve: pre-allocate the right amount of memory to avoid re-allocation when adding elements to the vector
-    triplets.reserve(_mesh.n_edges() * 2 + _mesh.n_vertices());
-
-    Eigen::VectorXd vertex_weights;
-    if (_kind == LaplacianWeights::Cotan) {
-        Eigen::VectorXd vertex_areas = computeVertexAreas(AreaFormulation::MixedVoronoi, _mesh, _positions);
-        vertex_weights = (2.0 * vertex_areas).cwiseInverse();
-    } else {
-        assert(_kind == LaplacianWeights::Uniform);
-        vertex_weights.resize(_mesh.n_vertices());
-        for (const auto vh : _mesh.vertices()) {
-            vertex_weights[vh.idx()] = 1.0 / _mesh.valence(vh);
-        }
-    }
-
-    for (OpenMesh::SmartVertexHandle current_vertex : _mesh.vertices()) {
-        int current_vertex_idx = current_vertex.idx();
-        
-        double current_vertex_weight = vertex_weights[current_vertex_idx];
-
-        double current_weight_sum = 0;
-        for (OpenMesh::SmartHalfedgeHandle current_halfedge : current_vertex.outgoing_halfedges()) {
-            OpenMesh::SmartVertexHandle current_neighbor = current_halfedge.to();
-
-            double current_neighbor_weight;
-            if (_kind == LaplacianWeights::Cotan) {
-                current_neighbor_weight = compute_cotan_weight(_mesh, current_halfedge.edge(), _positions);
-            } else {
-                assert(_kind == LaplacianWeights::Uniform);
-                current_neighbor_weight = 1;
-            }
-
-            double current_neighbor_value = current_vertex_weight * current_neighbor_weight;
-
-            triplets.push_back({current_vertex_idx, current_neighbor.idx(), current_neighbor_value});
-            current_weight_sum += current_neighbor_value;
-        }
-
-        triplets.push_back({current_vertex_idx, current_vertex_idx, -current_weight_sum});
-    }
-
-    L.setFromTriplets(triplets.begin(), triplets.end());
-    return L;
+    return D * L;
 }
 
 /// Get mesh vertex positions as n x 3 matrix
@@ -479,11 +492,28 @@ bool MeshSmoothingPlugin::smooth_implicit(
         // We set up a new system in every iteration on purpose.
         // Usually you will use one a single iteration (or only few) for implicit smoothing,
         // but this is useful for experimentation.
-
-        SpMat system;
         Eigen::MatrixXd const &cur_pos = pod.position_history.at(iter);
         Eigen::MatrixXd new_positions;
-        const Eigen::VectorXd vertex_areas = computeVertexAreas(AreaFormulation::MixedVoronoi, mesh, cur_pos);
+
+        Eigen::DiagonalMatrix<double, -1> laplacian_diagonal = setup_laplacian_diagonal(settings.laplacian, mesh, cur_pos);
+        std::cout << "calculating inverse diagonal now" << std::endl;
+        
+        auto diag_vector = laplacian_diagonal.diagonal().cwiseInverse();
+        
+        SpMat laplacian_coefficients = setup_laplacian_coefficients(settings.laplacian, mesh, cur_pos);
+
+        SpMat system = -(settings.timestep * laplacian_coefficients);
+        system += diag_vector.asDiagonal();
+
+        std::cout << "calculating b now" << std::endl;
+        Eigen::MatrixXd b = diag_vector.asDiagonal() * cur_pos;
+
+        Eigen::SimplicialLLT decomposition(system);
+        std::cout << "solving now" << std::endl;
+        Eigen::MatrixXd result = decomposition.solve(b);
+        Eigen::ComputationInfo t = decomposition.info();
+        
+        std::cout <<"finished now!" << std::endl;
         // TODO:
         //  - Set up symmetric(!) system matrix A (symmetry is important for efficient decomposition/solve)
         //     - Use cur_pos to compute the laplacian matrix.
@@ -492,7 +522,7 @@ bool MeshSmoothingPlugin::smooth_implicit(
         //      - You may want to try different solvers and see which one performs best for your test inputs
         //  - Store the new x in new_positions
         //
-        new_positions = cur_pos * 1.2; // not correct, just make something happen.
+        new_positions = result;
 
         pod.position_history.push_back(new_positions);
     }
