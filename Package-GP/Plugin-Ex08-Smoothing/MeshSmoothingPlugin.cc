@@ -455,9 +455,6 @@ void MeshSmoothingPlugin::smooth(
     const auto &orig_pos = pod.position_history.at(0);
     auto new_pos = pod.position_history.at(settings.iterations);
 
-    auto mesh_volume = compute_mesh_volume(mesh, orig_pos);
-    std::cout << "volume: " << mesh_volume << std::endl;
-
     if (settings.preserve_volume && !has_boundary(mesh)) {
         // volume is not well-defined on an open mesh,
         // so we silently ignore volume preservation if there is a boundary.
@@ -525,44 +522,34 @@ bool MeshSmoothingPlugin::smooth_implicit(
 
     const Eigen::MatrixXd orig_vpos = pod.position_history.at(0);
 
-
     pod.position_history.reserve(settings.iterations + 1);
     for (std::size_t iter = base_iter; iter < settings.iterations; ++iter) {
         // We set up a new system in every iteration on purpose.
         // Usually you will use one a single iteration (or only few) for implicit smoothing,
         // but this is useful for experimentation.
         Eigen::MatrixXd const &cur_pos = pod.position_history.at(iter);
-        Eigen::MatrixXd new_positions;
-
-        Eigen::DiagonalMatrix<double, -1> laplacian_diagonal = setup_laplacian_diagonal(settings.laplacian, mesh, cur_pos);
-        std::cout << "calculating inverse diagonal now" << std::endl;
         
-        auto diag_vector = laplacian_diagonal.diagonal().cwiseInverse();
-        
+        Eigen::DiagonalMatrix<double, -1> laplacian_inverse_diagonal = 
+            setup_laplacian_diagonal(settings.laplacian, mesh, cur_pos)
+                .diagonal()
+                .cwiseInverse()
+                .asDiagonal();
         SpMat laplacian_coefficients = setup_laplacian_coefficients(settings.laplacian, mesh, cur_pos);
-
+                
         SpMat system = -(settings.timestep * laplacian_coefficients);
-        system += diag_vector.asDiagonal();
+        system += laplacian_inverse_diagonal;
 
-        std::cout << "calculating b now" << std::endl;
-        Eigen::MatrixXd b = diag_vector.asDiagonal() * cur_pos;
+        Eigen::MatrixXd b = laplacian_inverse_diagonal * cur_pos;
 
         Eigen::SimplicialLLT decomposition(system);
-        std::cout << "solving now" << std::endl;
         Eigen::MatrixXd result = decomposition.solve(b);
-        Eigen::ComputationInfo t = decomposition.info();
-        
-        std::cout <<"finished now!" << std::endl;
-        // TODO:
-        //  - Set up symmetric(!) system matrix A (symmetry is important for efficient decomposition/solve)
-        //     - Use cur_pos to compute the laplacian matrix.
-        //  - Compute the right hand side b
-        //  - Solve Ax = b using a suitable sparse linear solver from Eigen's offerings
-        //      - You may want to try different solvers and see which one performs best for your test inputs
-        //  - Store the new x in new_positions
-        //
-        new_positions = result;
 
+        if (decomposition.info() != Eigen::ComputationInfo::Success) {
+            emit log(LOGWARN, "Failed to solve linear system for implicit smoothing");
+            return false;
+        }
+
+        Eigen::MatrixXd new_positions = result;
         pod.position_history.push_back(new_positions);
     }
     return true;
