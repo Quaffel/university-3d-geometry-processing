@@ -1,4 +1,5 @@
 #include "MeshSmoothingPlugin.hh"
+#include "OpenMesh/Core/Utils/Predicates.hh"
 #include <ObjectTypes/TriangleMesh/PluginFunctionsTriangleMesh.hh>
 #include <OpenMesh/Core/Utils/PropertyManager.hh>
 #include <OpenFlipper/common/perObjectData.hh>
@@ -138,12 +139,49 @@ inline SpMat setup_laplacian(
         OpenMesh::TriMesh const& _mesh,
         Eigen::MatrixXd const &_positions)
 {
+    /*
+        Constructs Laplacian matrix L for which it holds that
+            L = DM
+        with
+            D       = diag(..., 1 / (2 * A_i))
+        and
+                        cotan weights for halfedge that connects i and j    if  i != j and j is neighbor of i
+            M_ij    =   negative sum of all cotan weights                   if  i = j
+                        0                                                   otherwise
+    */
+    SpMat L {static_cast<Eigen::Index>(_mesh.n_vertices()), static_cast<Eigen::Index>(_mesh.n_vertices())};
     std::vector<Eigen::Triplet<double>> triplets;
 
     // reserve: pre-allocate the right amount of memory to avoid re-allocation when adding elements to the vector
     triplets.reserve(_mesh.n_edges() * 2 + _mesh.n_vertices());
 
-    // TODO: fill in triplets to set up the Laplacian matrix using the given edge weights.
+    Eigen::VectorXd vertex_areas = computeVertexAreas(AreaFormulation::MixedVoronoi, _mesh, _positions);
+    for (OpenMesh::SmartVertexHandle current_vertex : _mesh.vertices()) {
+        int current_vertex_idx = current_vertex.idx();
+
+        double current_vertex_area = vertex_areas[current_vertex_idx];
+        double current_vertex_weight = 1 / (2 * current_vertex_area);
+
+        double current_weight_sum = 0;
+        for (OpenMesh::SmartHalfedgeHandle current_halfedge : current_vertex.outgoing_halfedges()) {
+            OpenMesh::SmartVertexHandle current_neighbor = current_halfedge.to();
+
+            double current_neighbor_weight;
+            if (_kind == LaplacianWeights::Cotan) {
+                current_neighbor_weight = compute_cotan_weight(_mesh, current_halfedge.edge(), _positions);
+            } else {
+                assert(_kind == LaplacianWeights::Uniform);
+                current_neighbor_weight = 1;
+            }
+
+            double current_neighbor_value = current_vertex_weight * current_neighbor_weight;
+
+            triplets.push_back({current_vertex_idx, current_neighbor.idx(), current_neighbor_value});
+            current_weight_sum += current_neighbor_value;
+        }
+
+        triplets.push_back({current_vertex_idx, current_vertex_idx, -current_weight_sum});
+    }
 
     L.setFromTriplets(triplets.begin(), triplets.end());
     return L;
@@ -403,8 +441,7 @@ void MeshSmoothingPlugin::smooth_explicit(
             normalize_laplacian_rows(L);
         }
 
-        // TODO: perform one step of explicit smoothing to `cur_pos`.
-        // Use settings.timestep for $\delta t$.
+        cur_pos = cur_pos + settings.timestep * (L * cur_pos);
         pod.position_history.push_back(cur_pos);
     }
 }
