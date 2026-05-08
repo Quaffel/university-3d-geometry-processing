@@ -155,12 +155,22 @@ inline SpMat setup_laplacian(
     // reserve: pre-allocate the right amount of memory to avoid re-allocation when adding elements to the vector
     triplets.reserve(_mesh.n_edges() * 2 + _mesh.n_vertices());
 
-    Eigen::VectorXd vertex_areas = computeVertexAreas(AreaFormulation::MixedVoronoi, _mesh, _positions);
+    Eigen::VectorXd vertex_weights;
+    if (_kind == LaplacianWeights::Cotan) {
+        Eigen::VectorXd vertex_areas = computeVertexAreas(AreaFormulation::MixedVoronoi, _mesh, _positions);
+        vertex_weights = (2.0 * vertex_areas).cwiseInverse();
+    } else {
+        assert(_kind == LaplacianWeights::Uniform);
+        vertex_weights.resize(_mesh.n_vertices());
+        for (const auto vh : _mesh.vertices()) {
+            vertex_weights[vh.idx()] = 1.0 / _mesh.valence(vh);
+        }
+    }
+
     for (OpenMesh::SmartVertexHandle current_vertex : _mesh.vertices()) {
         int current_vertex_idx = current_vertex.idx();
-
-        double current_vertex_area = vertex_areas[current_vertex_idx];
-        double current_vertex_weight = 1 / (2 * current_vertex_area);
+        
+        double current_vertex_weight = vertex_weights[current_vertex_idx];
 
         double current_weight_sum = 0;
         for (OpenMesh::SmartHalfedgeHandle current_halfedge : current_vertex.outgoing_halfedges()) {
