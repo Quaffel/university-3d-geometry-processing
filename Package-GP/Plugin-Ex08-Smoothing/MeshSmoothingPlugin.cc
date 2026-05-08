@@ -400,12 +400,16 @@ static void apply_volume_preservation(TriMesh const& mesh,
                                       Eigen::RowVector3d center_before)
 {
     double volume_current = compute_mesh_volume(mesh, positions);
-    double scaling_factor = vol_before / volume_current;
-    double adjusted_scaling_factor = std::cbrt(scaling_factor);
+
+    // Scaling the edges a, b, and c that connect the triangle to the reference point (here: origin) to form
+    // a tetrahedron results in a cubic increase of the volume. This can be seen as follows:
+    //  original volume of tetrahedron: V = 1/6 * det[a | b | c]
+    //  scaled volume of tetrahedron:   V = 1/6 * det[s * a | s * b | s * c] = 1/6 * s^3 * det[a | b | c]
+    double scaling_factor = std::cbrt(vol_before / volume_current);
 
     // Equivalent to the following per-vertex update when using the origin as the reference point:
     //  vertex_position = scaling-factor * (vertex_position - reference_point) + reference_point
-    positions *= adjusted_scaling_factor;
+    positions *= scaling_factor;
 
     Eigen::RowVector3d new_center = average_position(mesh, positions);
     auto position_comp = center_before - new_center;
