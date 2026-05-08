@@ -356,8 +356,27 @@ void MeshSmoothingPlugin::slotApply()
 /// positions instead of the native mesh vertex positions.
 static double compute_mesh_volume(TriMesh const& mesh, Eigen::MatrixXd const& positions)
 {
-    // TODO: compute volume of the (assumed to be closed) mesh
-    return 1.;
+    double total_volume = 0;
+
+    for (OpenMesh::SmartFaceHandle face : mesh.faces()) {
+        Eigen::MatrixXd tetrahedron_volume_matrix(3, 3);
+
+        int vertex_idx = 0;
+        for (OpenMesh::SmartVertexHandle current_face_vertex : face.vertices()) {
+            auto current_vertex_position = positions.row(current_face_vertex.idx());
+
+            // We use the origin as the reference point, which means that the coordinates alone
+            // already describe the edges from the triangle to the reference point (to form the tetrahedron).
+            tetrahedron_volume_matrix.row(vertex_idx) = current_vertex_position;
+
+            vertex_idx++;
+        }
+
+        double face_tetrahedron_volume = tetrahedron_volume_matrix.determinant();
+        total_volume += face_tetrahedron_volume;
+    }
+
+    return 1.0 / 6.0 * total_volume;
 }
 
 static Eigen::RowVector3d average_position(TriMesh const& mesh, Eigen::MatrixXd const &_positions)
@@ -380,8 +399,18 @@ static void apply_volume_preservation(TriMesh const& mesh,
                                       double vol_before,
                                       Eigen::RowVector3d center_before)
 {
-    // TODO: scale `positions` to match the given volume and
-    // move to to (approximately) match the original center (avg. vertex pos)
+    double volume_current = compute_mesh_volume(mesh, positions);
+    double scaling_factor = vol_before / volume_current;
+    double adjusted_scaling_factor = std::cbrt(scaling_factor);
+
+    // Equivalent to the following per-vertex update when using the origin as the reference point:
+    //  vertex_position = scaling-factor * (vertex_position - reference_point) + reference_point
+    positions *= adjusted_scaling_factor;
+
+    Eigen::RowVector3d new_center = average_position(mesh, positions);
+    auto position_comp = center_before - new_center;
+
+    positions.rowwise() += position_comp;
 }
 
 bool has_boundary(TriMesh const &mesh) {
@@ -422,12 +451,19 @@ void MeshSmoothingPlugin::smooth(
     const auto &orig_pos = pod.position_history.at(0);
     auto new_pos = pod.position_history.at(settings.iterations);
 
+    auto mesh_volume = compute_mesh_volume(mesh, orig_pos);
+    std::cout << "volume: " << mesh_volume << std::endl;
+
     if (settings.preserve_volume && !has_boundary(mesh)) {
         // volume is not well-defined on an open mesh,
         // so we silently ignore volume preservation if there is a boundary.
         auto vol_before = compute_mesh_volume(mesh, orig_pos);
         Eigen::Vector3d center_before = average_position(mesh, orig_pos);
         apply_volume_preservation(mesh, new_pos, vol_before, center_before);
+
+        auto vol_after = compute_mesh_volume(mesh, new_pos);
+        std::cout << "volume    before: " << vol_before << "    after: " << vol_after << "  diff:" << (vol_after - vol_before) << std::endl;
+
     }
 
     if (settings.feature_enhance_alpha != 0) {
