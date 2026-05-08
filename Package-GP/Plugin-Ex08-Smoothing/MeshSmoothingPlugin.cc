@@ -1,6 +1,4 @@
 #include "MeshSmoothingPlugin.hh"
-#include "Eigen/Core"
-#include "OpenMesh/Core/Utils/Predicates.hh"
 #include <ObjectTypes/TriangleMesh/PluginFunctionsTriangleMesh.hh>
 #include <OpenMesh/Core/Utils/PropertyManager.hh>
 #include <OpenFlipper/common/perObjectData.hh>
@@ -163,7 +161,7 @@ inline SpMat setup_laplacian_coefficients(LaplacianWeights _kind,
 
     for (OpenMesh::SmartVertexHandle current_vertex : _mesh.vertices()) {
         int current_vertex_idx = current_vertex.idx();
-        
+
         double current_weight_sum = 0;
         for (OpenMesh::SmartHalfedgeHandle current_halfedge : current_vertex.outgoing_halfedges()) {
             OpenMesh::SmartVertexHandle current_neighbor = current_halfedge.to();
@@ -528,14 +526,14 @@ bool MeshSmoothingPlugin::smooth_implicit(
         // Usually you will use one a single iteration (or only few) for implicit smoothing,
         // but this is useful for experimentation.
         Eigen::MatrixXd const &cur_pos = pod.position_history.at(iter);
-        
-        Eigen::DiagonalMatrix<double, -1> laplacian_inverse_diagonal = 
+
+        Eigen::DiagonalMatrix<double, -1> laplacian_inverse_diagonal =
             setup_laplacian_diagonal(settings.laplacian, mesh, cur_pos)
                 .diagonal()
                 .cwiseInverse()
                 .asDiagonal();
         SpMat laplacian_coefficients = setup_laplacian_coefficients(settings.laplacian, mesh, cur_pos);
-                
+
         SpMat system = -(settings.timestep * laplacian_coefficients);
         system += laplacian_inverse_diagonal;
 
