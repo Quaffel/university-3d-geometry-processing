@@ -173,16 +173,18 @@ bool Remeshing::collapse_short_edges() {
         queue.push(std::make_pair(edge_length_[eh], eh));
     }
 
-    std::cout << "queue size: " << queue.size() << std::endl;
-
     int count = 0;
     for (; !queue.empty(); queue.pop()) {
-        std::cout << "checking for " << count << std::endl;
         count++;
 
         auto edge_priority_pair = queue.top();
         double edge_length = edge_priority_pair.first;
         OpenMesh::SmartEdgeHandle edge = edge_priority_pair.second;
+
+        if (!edge.is_valid() || edge.deleted()) {
+            std::cout << "eliminated invalid or deleted edge" << std::endl;
+            continue;
+        }
 
         double average_target_length = edge.vertices().avg([this](OpenMesh::SmartVertexHandle endpoint) {
             return target_length_[endpoint];
@@ -192,53 +194,61 @@ bool Remeshing::collapse_short_edges() {
             continue;
         }
 
-        std::cout << "found candidate; stage 1" << std::endl;
-
-        OpenMesh::SmartHalfedgeHandle edge_to_be_collapsed = edge.halfedges()
+        auto candidate_edges = edge.halfedges()
             .filtered([](OpenMesh::SmartHalfedgeHandle halfedge) -> bool {
-                std::cout << "first condition: " << !(halfedge.from().is_boundary() && !halfedge.to().is_boundary()) << std::endl;
+                // Boundary vertices must not be collapsed into non-boundary vertices
                 return !(halfedge.from().is_boundary() && !halfedge.to().is_boundary());
             })
             .filtered([this](OpenMesh::SmartHalfedgeHandle halfedge) -> bool {
-                std::cout << "second condition: " << !(halfedge.from().is_boundary() && !halfedge.to().is_boundary()) << std::endl;
+                // Halfedge must be collapsible
                 return mesh_.is_collapse_ok(halfedge);
-            })
-            .argmin([](OpenMesh::SmartHalfedgeHandle halfedge) -> uint {
-                return halfedge.from().valence();
             });
 
-        std::cout << "found candidate; stage 2" << std::endl;
-        if (!edge_to_be_collapsed.is_valid()) {
+        if (candidate_edges.begin() == candidate_edges.end()) {
+            // Verify whether there is at least one halfedge that satisfies the constraints.
+            // (argmin does not support empty ranges)
             continue;
         }
 
-        auto enqueue_neighbors = [&queue, this](OpenMesh::SmartHalfedgeHandle start_edge) -> void {
-            std::cout << "starting to enqueue" << std::endl;
-            OpenMesh::SmartHalfedgeHandle current_halfedge = start_edge;
+        OpenMesh::SmartHalfedgeHandle edge_to_be_collapsed = candidate_edges
+            .argmin([](OpenMesh::SmartHalfedgeHandle halfedge) -> uint {
+                // Collapse vertex with lower valence into vertex with higher valence
+                return halfedge.from().valence();
+            });
 
-            while (true) {
-                // std::cout << "round and round" << std::endl;
-                current_halfedge = current_halfedge.opp().next();
-                OpenMesh::SmartEdgeHandle current_edge = current_halfedge.edge();
-
-                if (current_halfedge.idx() == start_edge.idx()) {
-                    break;
+        auto enqueue_affected_edges = [&queue, this](OpenMesh::SmartHalfedgeHandle start_halfedge) -> void {
+            OpenMesh::SmartEdgeHandle start_edge = start_halfedge.edge();
+            for (OpenMesh::SmartEdgeHandle current_edge : start_halfedge.from().edges()) {
+                if (current_edge.idx() == start_edge.idx()) {
+                    continue;
                 }
-    
-                queue.push(std::make_pair(edge_length_[current_edge], current_edge));
+
+                double updated_edge_length = mesh_.calc_edge_length(current_edge);
+
+                edge_length_[current_edge] = updated_edge_length;
+                queue.push(std::make_pair(updated_edge_length, current_edge));
             }
         };
 
-        enqueue_neighbors(edge_to_be_collapsed);
+        // Enqueue all edges incident to the vertex that is collapsed into the other vertex.
+        // We move the vertex to be collapsed to the surviving vertex' position to keep distance calculation simple.
+        // We can safely enqueue edges before performing the collapse as the collapse operation updates the edge's
+        // endpoint rather than creating entirely new edges.
+        mesh_.set_point(edge_to_be_collapsed.from(), mesh_.point(edge_to_be_collapsed.to()));
+        enqueue_affected_edges(edge_to_be_collapsed);
 
         if (!edge_to_be_collapsed.to().is_boundary()) {
+            // Boundary vertices should not move.
+            // Non-boundary vertices move towards edge midpoint to better preserve shape.
             TriMesh::Point midpoint = edge_to_be_collapsed.edge().vertices().avg(
                 [this](OpenMesh::SmartVertexHandle it) {
                     return mesh_.point(it);
             });
 
             mesh_.set_point(edge_to_be_collapsed.to(), midpoint);
-            enqueue_neighbors(edge_to_be_collapsed.opp());
+
+            // Since we move the surviving edge, we also need to 
+            enqueue_affected_edges(edge_to_be_collapsed.opp());
         }
 
         mesh_.collapse(edge_to_be_collapsed);
@@ -257,7 +267,6 @@ bool Remeshing::collapse_short_edges() {
     // Leave the loop running until the queue is empty
     // This will always terminate, as a finite number of edges exist.
     std::cerr<<"collapsed " << n_collapses << " edges" << std::endl;
-    std::cerr<<"reached statement" << std::endl;
 
     mesh_.garbage_collection(); // this is required to remove gaps from deleted entities
     return n_collapses > 0;
