@@ -55,6 +55,8 @@ This suggests that any edge of length in $\left[\frac{4}{5} T, \frac{8}{5} T\rig
 
 ### exercise 5 - tangential relaxation
 
+#### determine tangential component
+
 To decompose the mean normal vector $v$ into a normal ($v_n$) and a tangential ($v_t$) component, we solely need access to the vertex normal vector $n$:
 
 $$
@@ -76,6 +78,23 @@ v_t \cdot n &= (v - v_n) \cdot n \\
 &= 0
 \end{align*}
 $$
+
+#### convergence behavior
+
+Our empirical evidence shows that even for large number of iterations (> 1,000), the solution does not become stationary.
+The primary reason for this observation seem to be the continuous edge splits and collapses.
+
+If we exclude edge splits and collapses from the algorithm, the solution becomes stationary after a low number of iterations.
+
+Tangential relaxation takes a couple of iterations to converge since the mean curvature normal depends on the positions of the considered vertex and its neighbors.
+Moving the vertices therefore causes the normal vectors to change, which results in additional movements in the next iteration.
+
+Valence equalization exclusively considers the mesh' topology (and not its geometry).
+Though technically possible, our implementation does not find the optimal solution in a single iteration.
+This is due to the fact that we don't properly re-evaluate all edges that may have been affected by an edge flip.
+We consider the edges in the flipped edge's immediate vicinity.
+To guarantee a perfect solution in a single iteration, we'd additionally need to consider all edges that are incident to the affected vertices.
+Since we need to perform multiple iterations of the complete remeshing algorithm anyway, we refrained from doing so to keep the implementation simple.
 
 ### exercise 6 - adaptive remeshing
 
