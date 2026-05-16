@@ -1,5 +1,8 @@
 #include "Remeshing.hh"
+#include "OpenMesh/Core/Utils/Predicates.hh"
+#include <algorithm>
 #include <queue>
+#include <vector>
 
 #define ASSIGNMENT_09_SOLUTION 1
 
@@ -111,16 +114,53 @@ void Remeshing::calc_target_lengths() {
 
 bool Remeshing::split_long_edges()
 {
-    // === TODO: your code goes here ===
-    //  Compute the desired length as the mean between the property target_length of two vertices of the edge
-    //  If the edge is longer than 4/3 * desired length
-    //    add the midpoint to the mesh as a new vertex
-    //    set the interpolated normal and interpolated target length property to the vertex
-    //    split the edge with this vertex (use OpenMesh function split_edge(EH, VH))
-    //
-    //  return true if any splits were performed, false if the mesh remained unchanged.
+    assert(edge_length_.isValid());
 
-    return false;
+    std::vector<std::pair<double, OpenMesh::SmartEdgeHandle>> edges_by_length;
+    edges_by_length.reserve(mesh_.n_edges());
+    for (OpenMesh::SmartEdgeHandle edge : mesh_.edges()) {
+        if (!edge.is_valid()) {
+            continue;
+        }
+
+        edges_by_length.emplace_back(edge_length_[edge], edge);
+    }
+    
+    std::sort(edges_by_length.begin(), edges_by_length.end(), [](
+        PairLE& first_edge_priority_pair, PairLE& second_edge_priority_pair
+    ) -> bool {
+        return first_edge_priority_pair.first > second_edge_priority_pair.first;
+    });
+    
+    bool performed_one_or_more_splits = false;
+    for (std::pair<double, OpenMesh::SmartEdgeHandle>& edge_priority_pair : edges_by_length) {
+        OpenMesh::SmartEdgeHandle edge = edge_priority_pair.second;
+
+        TriMesh::Point first_endpoint = mesh_.point(edge.v0());
+        TriMesh::Point second_endpoint = mesh_.point(edge.v1());
+        TriMesh::Point distance_vector = second_endpoint - first_endpoint;
+
+        double average_target_length = edge.vertices().avg([this](OpenMesh::SmartVertexHandle endpoint) {
+            return target_length_[endpoint];
+        });
+        
+        double edge_length = distance_vector.norm();
+        if (edge_length <= 4. / 3. * average_target_length) {
+            continue;
+        }
+
+        performed_one_or_more_splits = true;
+        OpenMesh::SmartVertexHandle midpoint = mesh_.add_vertex(first_endpoint + distance_vector / 2);
+        
+        target_length_[midpoint] = average_target_length;
+        TriMesh::Point average_norm = edge.vertices().avg([this](OpenMesh::SmartVertexHandle endpoint) {
+            return mesh_.normal(endpoint);
+        });
+        
+        mesh_.split_edge(edge, midpoint);
+    }
+
+    return performed_one_or_more_splits;
 }
 
 bool Remeshing::collapse_short_edges() {
