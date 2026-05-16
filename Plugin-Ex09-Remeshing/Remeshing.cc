@@ -190,7 +190,8 @@ bool Remeshing::collapse_short_edges() {
             return target_length_[endpoint];
         });
 
-        if (edge_length >= 4. / 5. * average_target_length) {
+        double maximum_length = 4. / 5. * average_target_length;
+        if (edge_length >= maximum_length || edge_length_[edge] >= maximum_length) {
             continue;
         }
 
@@ -216,26 +217,14 @@ bool Remeshing::collapse_short_edges() {
                 return halfedge.from().valence();
             });
 
-        auto enqueue_affected_edges = [&queue, this](OpenMesh::SmartHalfedgeHandle start_halfedge) -> void {
-            OpenMesh::SmartEdgeHandle start_edge = start_halfedge.edge();
-            for (OpenMesh::SmartEdgeHandle current_edge : start_halfedge.from().edges()) {
-                if (current_edge.idx() == start_edge.idx()) {
-                    continue;
-                }
-
+        auto enqueue_incident_edges = [&queue, this](OpenMesh::SmartVertexHandle collapsed_vertex) -> void {
+            for (OpenMesh::SmartEdgeHandle current_edge : collapsed_vertex.edges()) {
                 double updated_edge_length = mesh_.calc_edge_length(current_edge);
 
                 edge_length_[current_edge] = updated_edge_length;
                 queue.push(std::make_pair(updated_edge_length, current_edge));
             }
         };
-
-        // Enqueue all edges incident to the vertex that is collapsed into the other vertex.
-        // We move the vertex to be collapsed to the surviving vertex' position to keep distance calculation simple.
-        // We can safely enqueue edges before performing the collapse as the collapse operation updates the edge's
-        // endpoint rather than creating entirely new edges.
-        mesh_.set_point(edge_to_be_collapsed.from(), mesh_.point(edge_to_be_collapsed.to()));
-        enqueue_affected_edges(edge_to_be_collapsed);
 
         if (!edge_to_be_collapsed.to().is_boundary()) {
             // Boundary vertices should not move.
@@ -246,12 +235,11 @@ bool Remeshing::collapse_short_edges() {
             });
 
             mesh_.set_point(edge_to_be_collapsed.to(), midpoint);
-
-            // Since we move the surviving edge, we also need to 
-            enqueue_affected_edges(edge_to_be_collapsed.opp());
         }
 
         mesh_.collapse(edge_to_be_collapsed);
+
+        enqueue_incident_edges(edge_to_be_collapsed.to());
         n_collapses++;
     }
     // === TODO: your code goes here ===
