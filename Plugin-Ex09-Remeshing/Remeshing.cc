@@ -242,18 +242,7 @@ bool Remeshing::collapse_short_edges() {
         enqueue_incident_edges(edge_to_be_collapsed.to());
         n_collapses++;
     }
-    // === TODO: your code goes here ===
-    // Compute the desired length as the mean between the property target_length_ of two vertices of the edge
-    // If the edge is shorter than 4/5 of the desired length
-    //    Check if halfedge connects a boundary vertex with a non-boundary vertex. If so, don't collapse.
-    //    Check if halfedges collapsible (mesh_.is_collapse_ok())
-    //    Select the halfedge to be collapsed if at least one halfedge can be collapsed
-    //    Collapse the halfedge
-    //    If the remaining vertex is not a boundary vertex that would be pulled inwards,
-    //    move the remaining vertex to the middle of the former edge
-    //    Add any other edges whose length was changed to the queue
-    // Leave the loop running until the queue is empty
-    // This will always terminate, as a finite number of edges exist.
+
     std::cerr<<"collapsed " << n_collapses << " edges" << std::endl;
 
     mesh_.garbage_collection(); // this is required to remove gaps from deleted entities
