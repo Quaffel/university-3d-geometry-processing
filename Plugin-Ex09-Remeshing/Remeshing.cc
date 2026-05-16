@@ -1,9 +1,5 @@
 #include "Remeshing.hh"
-#include "OpenMesh/Core/Utils/Predicates.hh"
-#include <algorithm>
 #include <queue>
-#include <utility>
-#include <vector>
 
 #define ASSIGNMENT_09_SOLUTION 1
 
@@ -45,8 +41,7 @@ TriMesh::Point Remeshing::compute_mean_curvature_normal(OpenMesh::SmartVertexHan
     TriMesh::Point vertex_position = mesh_.point(vertex);
 
     TriMesh::Point mean_curvature_normal = TriMesh::Point(0.0);
-    for (OpenMesh::SmartHalfedgeHandle outgoing_halfedges : vertex.outgoing_halfedges()) {
-        OpenMesh::SmartVertexHandle neighbor = outgoing_halfedges.to();
+    for (OpenMesh::SmartVertexHandle neighbor : vertex.vertices()) {
         mean_curvature_normal += mesh_.point(neighbor) - vertex_position;
     }
 
@@ -151,14 +146,13 @@ bool Remeshing::split_long_edges()
 
         edges_by_length.emplace_back(edge_length_[edge], edge);
     }
-    
-    // TODO: Verify order
+
     std::sort(edges_by_length.begin(), edges_by_length.end(), [](
         PairLE& first_edge_priority_pair, PairLE& second_edge_priority_pair
     ) -> bool {
         return first_edge_priority_pair.first > second_edge_priority_pair.first;
     });
-    
+
     bool performed_one_or_more_splits = false;
     for (std::pair<double, OpenMesh::SmartEdgeHandle>& edge_priority_pair : edges_by_length) {
         OpenMesh::SmartEdgeHandle edge = edge_priority_pair.second;
@@ -170,7 +164,7 @@ bool Remeshing::split_long_edges()
         double average_target_length = edge.vertices().avg([this](OpenMesh::SmartVertexHandle endpoint) {
             return target_length_[endpoint];
         });
-        
+
         double edge_length = distance_vector.norm();
         if (edge_length <= 4. / 3. * average_target_length) {
             continue;
@@ -178,12 +172,12 @@ bool Remeshing::split_long_edges()
 
         performed_one_or_more_splits = true;
         OpenMesh::SmartVertexHandle midpoint = mesh_.add_vertex(first_endpoint + distance_vector / 2);
-        
+
         target_length_[midpoint] = average_target_length;
         TriMesh::Point average_norm = edge.vertices().avg([this](OpenMesh::SmartVertexHandle endpoint) {
             return mesh_.normal(endpoint);
         });
-        
+
         mesh_.split_edge(edge, midpoint);
     }
 
@@ -272,7 +266,7 @@ bool Remeshing::collapse_short_edges() {
     }
 
     std::cerr<<"collapsed " << n_collapses << " edges" << std::endl;
-    
+
     mesh_.garbage_collection(); // this is required to remove gaps from deleted entities
     if (n_collapses > 0) {
         update_edge_len_cache();
