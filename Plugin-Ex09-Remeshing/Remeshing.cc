@@ -252,15 +252,64 @@ bool Remeshing::collapse_short_edges() {
 bool Remeshing::equalize_valences()
 {
     int n_flips=0;
-    std::queue<OpenMesh::EdgeHandle> queue;
-    for(auto eh : mesh_.edges())
+    std::queue<OpenMesh::SmartEdgeHandle> queue;
+    for(auto eh : mesh_.edges()) {
         queue.push(eh);
-    // === TODO: your code goes here ===
-    //  Extract valences of the four vertices involved to an eventual flip.
-    //  Compute the sum of the squared valence deviances before flip
-    //  Compute the sum of the squared valence deviances after an eventual flip
-    //  If valence deviance is decreased and flip is possible, flip the vertex
-    // Leave the loop running until the queue is empty
+    }
+
+    for (; !queue.empty(); queue.pop()) {
+        OpenMesh::SmartEdgeHandle edge = queue.front();
+
+        if (!mesh_.is_flip_ok(edge)) {
+            continue;
+        }
+
+        // If we can flip the edge, the edge cannot be on the boundary and both halfedges must have an opposite vertex.
+        assert(!edge.is_boundary());
+        assert(edge.h0().next().next().idx() == edge.h0().prev().idx());
+        assert(edge.h1().next().next().idx() == edge.h1().prev().idx());
+
+        auto map_double_triangle_vertex = [&edge](
+            std::function<double(OpenMesh::SmartVertexHandle)> mapper
+        ) -> ACG::Vec4d {
+            // Indices follow from traversal order when cycling around the "double triangle"
+            return ACG::Vec4d(
+                mapper(edge.h0().to()),
+                mapper(edge.h0().next().to()),
+                mapper(edge.h1().to()),
+                mapper(edge.h1().next().to())
+            );
+        };
+
+        ACG::Vec4d valences_before_flip = map_double_triangle_vertex([](auto current_vertex) {
+            return current_vertex.valence();
+        });
+        ACG::Vec4d valences_after_flip = valences_before_flip + ACG::Vec4d(-1, 1, -1, 1);
+
+        ACG::Vec4d optimal_valences = map_double_triangle_vertex([](auto current_vertex) {
+            if (current_vertex.is_boundary()) {
+                return 4;
+            }
+
+            return 6;
+        });
+
+        double squared_deviation_before_flip = (valences_before_flip - optimal_valences).sqrnorm();
+        double squared_deviation_after_flip = (valences_after_flip - optimal_valences).sqrnorm();
+        if (squared_deviation_before_flip <= squared_deviation_after_flip) {
+            continue;
+        }
+
+        mesh_.flip(edge);
+
+        queue.push(edge.h0().next().edge());
+        queue.push(edge.h0().next().next().edge());
+        queue.push(edge.h1().next().edge());
+        queue.push(edge.h1().next().next().edge());
+
+        n_flips++;
+    }
+
     std::cerr<<"\nflipped "<<n_flips<<" edges" << std::endl;
     return n_flips > 0;
 }
