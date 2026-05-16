@@ -25,7 +25,7 @@ struct RemeshingConfig {
 };
 class Remeshing : public PerObjectData {
 public:
-    using PairLE = std::pair<double, OpenMesh::EdgeHandle>;
+    using PairLE = std::pair<double, OpenMesh::SmartEdgeHandle>;
     using PairLHE = std::pair<double, OpenMesh::HalfedgeHandle>;
 
 public:

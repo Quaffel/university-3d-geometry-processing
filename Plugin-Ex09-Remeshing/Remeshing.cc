@@ -2,6 +2,7 @@
 #include "OpenMesh/Core/Utils/Predicates.hh"
 #include <algorithm>
 #include <queue>
+#include <utility>
 #include <vector>
 
 #define ASSIGNMENT_09_SOLUTION 1
@@ -108,7 +109,7 @@ void Remeshing::calc_target_lengths() {
         throw std::runtime_error("unknown remeshing type");
     }
 
-    std::cout << "orig avg elen " << mesh_.edges().avg(edge_length_) << std::endl;;
+    std::cout << "orig avg elen " << mesh_.edges().avg(edge_length_) << std::endl;
     std::cout << "avg target len: " << mesh_.vertices().avg(target_length_) << std::endl;;
 }
 
@@ -126,6 +127,7 @@ bool Remeshing::split_long_edges()
         edges_by_length.emplace_back(edge_length_[edge], edge);
     }
     
+    // TODO: Verify order
     std::sort(edges_by_length.begin(), edges_by_length.end(), [](
         PairLE& first_edge_priority_pair, PairLE& second_edge_priority_pair
     ) -> bool {
@@ -167,8 +169,81 @@ bool Remeshing::collapse_short_edges() {
     int n_collapses = 0;
     // with std::greater, short edges will be at the top of the queue:
     std::priority_queue<PairLE, std::vector<PairLE>, std::greater<PairLE>> queue;
-    for(auto eh : mesh_.edges())
+    for (auto eh : mesh_.edges()) {
         queue.push(std::make_pair(edge_length_[eh], eh));
+    }
+
+    std::cout << "queue size: " << queue.size() << std::endl;
+
+    int count = 0;
+    for (; !queue.empty(); queue.pop()) {
+        std::cout << "checking for " << count << std::endl;
+        count++;
+
+        auto edge_priority_pair = queue.top();
+        double edge_length = edge_priority_pair.first;
+        OpenMesh::SmartEdgeHandle edge = edge_priority_pair.second;
+
+        double average_target_length = edge.vertices().avg([this](OpenMesh::SmartVertexHandle endpoint) {
+            return target_length_[endpoint];
+        });
+
+        if (edge_length >= 4. / 5. * average_target_length) {
+            continue;
+        }
+
+        std::cout << "found candidate; stage 1" << std::endl;
+
+        OpenMesh::SmartHalfedgeHandle edge_to_be_collapsed = edge.halfedges()
+            .filtered([](OpenMesh::SmartHalfedgeHandle halfedge) -> bool {
+                std::cout << "first condition: " << !(halfedge.from().is_boundary() && !halfedge.to().is_boundary()) << std::endl;
+                return !(halfedge.from().is_boundary() && !halfedge.to().is_boundary());
+            })
+            .filtered([this](OpenMesh::SmartHalfedgeHandle halfedge) -> bool {
+                std::cout << "second condition: " << !(halfedge.from().is_boundary() && !halfedge.to().is_boundary()) << std::endl;
+                return mesh_.is_collapse_ok(halfedge);
+            })
+            .argmin([](OpenMesh::SmartHalfedgeHandle halfedge) -> uint {
+                return halfedge.from().valence();
+            });
+
+        std::cout << "found candidate; stage 2" << std::endl;
+        if (!edge_to_be_collapsed.is_valid()) {
+            continue;
+        }
+
+        auto enqueue_neighbors = [&queue, this](OpenMesh::SmartHalfedgeHandle start_edge) -> void {
+            std::cout << "starting to enqueue" << std::endl;
+            OpenMesh::SmartHalfedgeHandle current_halfedge = start_edge;
+
+            while (true) {
+                // std::cout << "round and round" << std::endl;
+                current_halfedge = current_halfedge.opp().next();
+                OpenMesh::SmartEdgeHandle current_edge = current_halfedge.edge();
+
+                if (current_halfedge.idx() == start_edge.idx()) {
+                    break;
+                }
+    
+                queue.push(std::make_pair(edge_length_[current_edge], current_edge));
+            }
+        };
+
+        enqueue_neighbors(edge_to_be_collapsed);
+
+        if (!edge_to_be_collapsed.to().is_boundary()) {
+            TriMesh::Point midpoint = edge_to_be_collapsed.edge().vertices().avg(
+                [this](OpenMesh::SmartVertexHandle it) {
+                    return mesh_.point(it);
+            });
+
+            mesh_.set_point(edge_to_be_collapsed.to(), midpoint);
+            enqueue_neighbors(edge_to_be_collapsed.opp());
+        }
+
+        mesh_.collapse(edge_to_be_collapsed);
+        n_collapses++;
+    }
     // === TODO: your code goes here ===
     // Compute the desired length as the mean between the property target_length_ of two vertices of the edge
     // If the edge is shorter than 4/5 of the desired length
@@ -182,6 +257,7 @@ bool Remeshing::collapse_short_edges() {
     // Leave the loop running until the queue is empty
     // This will always terminate, as a finite number of edges exist.
     std::cerr<<"collapsed " << n_collapses << " edges" << std::endl;
+    std::cerr<<"reached statement" << std::endl;
 
     mesh_.garbage_collection(); // this is required to remove gaps from deleted entities
     return n_collapses > 0;
