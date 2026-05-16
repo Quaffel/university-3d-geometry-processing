@@ -49,6 +49,7 @@ public:
     bool equalize_valences();
 
 private:
+    TriMesh::Point compute_mean_curvature_normal(OpenMesh::SmartVertexHandle vertex);
     void update_edge_len_cache();
 
 private:

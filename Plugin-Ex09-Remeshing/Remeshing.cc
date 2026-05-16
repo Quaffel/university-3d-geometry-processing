@@ -40,11 +40,20 @@ bool Remeshing::remesh() {
     }
 }
 
-void Remeshing::tangential_relaxation(int n_iters) {
-    int valence(0);
-    Vec3d u, n;
-    Vec3d laplace;
+TriMesh::Point Remeshing::compute_mean_curvature_normal(OpenMesh::SmartVertexHandle vertex) {
+    // Approximates mean curvature normal using uniform Laplacian discretization.
+    TriMesh::Point vertex_position = mesh_.point(vertex);
 
+    TriMesh::Point mean_curvature_normal = TriMesh::Point(0.0);
+    for (OpenMesh::SmartHalfedgeHandle outgoing_halfedges : vertex.outgoing_halfedges()) {
+        OpenMesh::SmartVertexHandle neighbor = outgoing_halfedges.to();
+        mean_curvature_normal += mesh_.point(neighbor) - vertex_position;
+    }
+
+    return mean_curvature_normal / vertex.valence();
+}
+
+void Remeshing::tangential_relaxation(int n_iters) {
     auto update = OpenMesh::makeTemporaryProperty<VH, Vec3d>(mesh_);
 
     mesh_.update_normals();
@@ -53,11 +62,18 @@ void Remeshing::tangential_relaxation(int n_iters) {
     // smooth
     for (int iters = 0; iters < n_iters; ++iters) {
         for (auto vh : mesh_.vertices()) {
-            if (mesh_.is_boundary(vh)) continue;
-                // ------------- TODO: IMPLEMENT HERE ---------
-                //  Compute uniform laplacian curvature approximation vector
-                //  Compute the tangential component of the laplacian vector and move the vertex
-                //  Store smoothed vertex location in the update vertex property.
+            if (mesh_.is_boundary(vh)) {
+                continue;
+            }
+
+            TriMesh::Point vertex_normal = mesh_.normal(vh);
+            TriMesh::Point vertex_mcn = compute_mean_curvature_normal(vh);
+
+            assert(std::abs(vertex_normal.norm() - 1) < 1e-6);
+            TriMesh::Point vertex_mcn_normal_component = (vertex_mcn.dot(vertex_normal)) * vertex_normal;
+            TriMesh::Point vertex_mcn_tangential_component = vertex_mcn - vertex_mcn_normal_component;
+
+            update[vh] = vertex_mcn_tangential_component;
         }
 
         for (auto vh : mesh_.vertices()) {
@@ -162,6 +178,10 @@ bool Remeshing::split_long_edges()
         mesh_.split_edge(edge, midpoint);
     }
 
+    if (performed_one_or_more_splits) {
+        update_edge_len_cache();
+    }
+
     return performed_one_or_more_splits;
 }
 
@@ -182,7 +202,6 @@ bool Remeshing::collapse_short_edges() {
         OpenMesh::SmartEdgeHandle edge = edge_priority_pair.second;
 
         if (!edge.is_valid() || edge.deleted()) {
-            std::cout << "eliminated invalid or deleted edge" << std::endl;
             continue;
         }
 
@@ -244,8 +263,11 @@ bool Remeshing::collapse_short_edges() {
     }
 
     std::cerr<<"collapsed " << n_collapses << " edges" << std::endl;
-
+    
     mesh_.garbage_collection(); // this is required to remove gaps from deleted entities
+    if (n_collapses > 0) {
+        update_edge_len_cache();
+    }
     return n_collapses > 0;
 }
 
