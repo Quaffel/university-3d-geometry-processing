@@ -86,8 +86,6 @@ void Remeshing::tangential_relaxation(int n_iters) {
 }
 
 void Remeshing::calc_target_lengths() {
-    double length, mean_length, H, K;
-
     const double target_edge_len = config_.target_length_ratio * mesh_.edges().avg(edge_length_);
 
     if(config_.type == RemeshingType::Uniform) {
@@ -105,21 +103,32 @@ void Remeshing::calc_target_lengths() {
             auto min_curv = OpenMesh::getProperty<VH, double>(mesh_, "min curvature");
 
             auto smoothed_target_len = OpenMesh::makeTemporaryProperty<VH, double>(mesh_);
-            // === TODO: your code goes here ===
-            // Get the maximal curvature at each vertex.
-            // Use the Curvature plugin you implemented in an earlier week to compute
-            // curvature, it will leave a vertex property that we can re-use.
-            // Calculate the desired edge length as the 1 divided by the
-            // absolute value of maximal curvature (plus a small epsilon)
-            // at each vertex, and assign it to the property target_length
-            // Smooth the target length uniformly (~5 iterations should be good).
-            // You can use the smoothed_target_len for intermediate storage of smoothed values
-            // (but you must copy the it back to target_length_)
 
-            // Now we apply global scaling to the target length, such that the average target length
-            // has the correct ratio to the original average edge length:
-            // === TODO: your code goes here ===
-            // - apply global scaling to target_length_ to match the user-specified length ratio
+            for (OpenMesh::SmartVertexHandle vertex : mesh_.vertices()) {
+                double vertex_min_curvature = std::abs(min_curv[vertex]);
+                double vertex_max_curvature = std::abs(max_curv[vertex]);
+
+                smoothed_target_len[vertex] = 1.0 / (std::max(vertex_min_curvature, vertex_max_curvature) + 1e-1);
+            }
+
+            for (uint smoothing_pass = 0; smoothing_pass < 5; smoothing_pass++) {
+                for (OpenMesh::SmartVertexHandle vertex : mesh_.vertices()) {
+                    double vertex_target_length = smoothed_target_len[vertex];
+
+                    for (OpenMesh::SmartVertexHandle neighbor : vertex.vertices()) {
+                        vertex_target_length += smoothed_target_len[neighbor];
+                    }
+
+                    smoothed_target_len[vertex] = vertex_target_length / (vertex.valence() + 1);
+                }
+            }
+
+            double average_target_length = mesh_.vertices().avg(smoothed_target_len);
+            double scaling_factor = target_edge_len / average_target_length;
+
+            for (OpenMesh::SmartVertexHandle vertex : mesh_.vertices()) {
+                target_length_[vertex] = scaling_factor * smoothed_target_len[vertex];
+            }
         }
     } else {
         throw std::runtime_error("unknown remeshing type");
