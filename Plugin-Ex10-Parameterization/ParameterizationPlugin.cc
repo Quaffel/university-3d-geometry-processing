@@ -155,7 +155,7 @@ bool map_surface_boundary_to_circle(TriMesh &_mesh) {
     for (auto [current_boundary_halfedge, current_boundary_halfedge_length] : boundary) {
         OpenMesh::SmartVertexHandle current_vertex = current_boundary_halfedge.to();
         _mesh.set_texcoord2D(
-            current_vertex, 
+            current_vertex,
             Vec2f(g_radius * std::sin(current_angle), g_radius * std::cos(current_angle))
         );
 
@@ -205,12 +205,22 @@ inline SpMat setup_laplacian(
     const size_t n = _mesh.n_vertices();
     auto L = SpMat(n, n);
 
-    // ==== TODO: your code here: *permuted* Laplacian matrix assembly ===
-    // fill in triplets to set up the Laplacian matrix using the given edge weights,
-    // using explicitly specified system indices (what row/column a given vertex handle corresponds to)
-    // NOTE: this is similar, but *not* identical to the smoothing exercise,
-    // as we do not have a 1:1 mapping of vertex handles and system indices anymore.
-    // (_sys_idx defines a permutation)
+    for (OpenMesh::SmartVertexHandle current_vertex : _mesh.vertices()) {
+        int current_vertex_system_idx = _sys_idx[current_vertex];
+        double total_neighbor_weights = 0;
+
+        for (OpenMesh::SmartHalfedgeHandle current_halfedge : current_vertex.outgoing_halfedges()) {
+            OpenMesh::SmartVertexHandle current_neighbor = current_halfedge.to();
+            int current_neighbor_system_idx = _sys_idx[current_neighbor];
+
+            double current_edge_weight = _edge_weights[current_halfedge.edge()];
+
+            triplets.emplace_back(current_vertex_system_idx, current_neighbor_system_idx, current_edge_weight);
+            total_neighbor_weights += current_edge_weight;
+        }
+
+        triplets.emplace_back(current_vertex_system_idx, current_vertex_system_idx, -total_neighbor_weights);
+    }
 
     L.setFromTriplets(triplets.begin(), triplets.end());
     return L;
@@ -317,44 +327,61 @@ struct ConstrainedPoissonSolver {
         , is_constrained_prop_{_is_constrained}
         , sys_idx_prop_{OpenMesh::makeTemporaryProperty<VH, Eigen::Index>(mesh)}
     {
-        // === TODO: fill sys_idx_prop_ ====
-        // Set up sys_idx_prop_ as a permutation of vertex handles, such that
-        // the system variables [0.. n_variables_-1] correspond to the set of non-constrained vertices,
-        // and [n_variables_...system_size_-1] are the constrained vertices.
-        // This way we obtain a nice block structured matrix as shown in the lecture.
+        // We permute the vertices to group constrained and unconstrained vertices:
+        //  indices [0.. n_variables_-1]            correspond to non-constrained vertices
+        //  indices [n_variables_...system_size_-1] correspond to constrained vertices
+        {
+            int constrained_vertex_idx = mesh_.n_vertices() - 1;
+            int unconstrained_vertex_idx = 0;
+
+            for (OpenMesh::SmartVertexHandle current_vertex : mesh_.vertices()) {
+                if (is_constrained_prop_[current_vertex]) {
+                    sys_idx_prop_[current_vertex] = constrained_vertex_idx;
+                    constrained_vertex_idx--;
+                } else {
+                    sys_idx_prop_[current_vertex] = unconstrained_vertex_idx;
+                    unconstrained_vertex_idx++;
+                }
+            }
+
+            assert(constrained_vertex_idx + 1 == unconstrained_vertex_idx);
+            n_variables_ = unconstrained_vertex_idx;
+        }
+
+        system_size_ = mesh_.n_vertices();
+        n_constraints_ = system_size_ - n_variables_;
+
+        std::cout << "n_variables_ = " << n_variables_
+            << ", system_size_ = " << system_size_
+            << ", #v " << mesh.n_vertices() << std::endl;
 
         SpMat full_system = setup_laplacian(mesh, edge_weights, sys_idx_prop_);
 
-        // === TODO: extract sub-matrices ====
-        // With the right permutation, we now have the following block structure in full_system:
+        // The permutation reveals the following block structure in the linear system:
         // [ A B ]    [u_var]   [b_var]
         // [ C D ]  * [u_fix] = [b_fix]
         //
         // full_system * full_u = full_rhs
         //
-        //  To solve it, we handle the constrained variables in the following way:
-        //  We implicitly (i.e., we pretend, but do not actually change the matrix)
-        //  that C = 0 and D = I (identity matrix).
+        // Theoretically speaking, C is a zero block and D is the identity matrix.
+        // This allows us to rearrange the system such that we can solve a smaller system.
+        // This simplified linear system does not use C and D, so we don't need to set them up in the first place.
         //
         //  We want to end up with the following _reduced_ system:
         //
         //  A              * u_var     = b_var - B * u_fix
         //
-        //  we use the following variables names in this code:
+        //  Since b_var is the zero vector, it holds that:
+        //
+        //  A              * u_var     = - B * u_fix
+        //
+        //  We use the following variables names in this code:
         //
         //  submatA_       * reduced_u = reduced_rhs
         //
-        // Eigen offers some nice APIs to extract sub-matrices from SparseMatrix objects:
-        // .block(row_start, col_start, n_rows, n_cols)
-        // or .{top,bottom}{Left,Right}Corner(...)
-        //
-        // Use them to extract the sub-matrices
-        //  submatA_ =      A (in the slides: \Delta_{nxn})
-        //  submatB_ =      B (in the slides: \Delta_{nxm})
-        //
-        //  and use them to compute reduced_rhs.
-        //
         // Note that if [A, B; C, D] is symmetric (or positive definite), so is A.
+        submatA_ = full_system.topLeftCorner(n_variables_, n_variables_);
+        submatB_ = full_system.topRightCorner(n_variables_, n_constraints_);
 
         solver_.compute(submatA_);
         if (solver_.info() != Eigen::Success) {
@@ -368,39 +395,36 @@ struct ConstrainedPoissonSolver {
 
     template<int N=1>
     VectorVProp<N> solve(VectorVProp<N> &rhs_prop) {
-
         Eigen::MatrixXd rhs_full = Eigen::MatrixXd::Zero(mesh_.n_vertices(), N);
         auto full_u = OpenMesh::makeTemporaryProperty<VH, Eigen::RowVector<double, N>>(mesh_);
 
         Eigen::MatrixXd reduced_rhs;
-        // === TODO: your code here: compute reduced RHS using submatB_.
-        // - First fill in rhs_full from the sparse constraints in rhs_prop by
-        //   applying the sys_idx_prop_ permutation. Only copy values where
-        //   vertices are constrained, leave the rest at zero.
-        //
-        // - Then compute reduced_rhs.
-        //
-        // Note: N can be > 1 (when we solve for multiple RHS at once), ensure
-        // that your code can handle this.
+        for (OpenMesh::SmartVertexHandle current_vertex : mesh_.vertices()) {
+            if (!is_constrained_prop_[current_vertex]) {
+                continue;
+            }
+
+            int current_vertex_system_idx = sys_idx_prop_[current_vertex];
+            rhs_full.row(current_vertex_system_idx) = rhs_prop[current_vertex];
+        }
+
+        // N can be > 1 (when we solve for multiple RHS at once)
+        reduced_rhs = - submatB_ * rhs_full.bottomRows(n_constraints_);
         assert(reduced_rhs.rows() == submatA_.rows());
 
-        // Note that even if we don't use it in this exercise, we could re-solve with
-        // a different RHS, e.g. the same constrained vertices constraint to *different* values.
-
         const Eigen::MatrixXd reduced_u = solver_.solve(reduced_rhs);
-        // these prints were useful for some debugging:
-        //std::cerr << "solved." << std::endl;
-        //std::cerr << "rhs min." << reduced_rhs.minCoeff() << std::endl;
-        //std::cerr << "rhs max." << reduced_rhs.maxCoeff() << std::endl;
-        //std::cerr << "min." << reduced_u.minCoeff() << std::endl;
-        //std::cerr << "max." << reduced_u.maxCoeff() << std::endl;
+        for (OpenMesh::SmartVertexHandle current_vertex : mesh_.vertices()) {
+            int current_vertex_system_idx = sys_idx_prop_[current_vertex];
 
-        // === TODO: your code here: extend reduced solution and map to mesh ===
-        // extend the reduced solution `reduced_u` to a full solution and store it in `full_u`.
-        // Important: you need to undo the sys_idx_prop_ permutation!!
-        // The full solution itself still is using system indices,
-        // we need to save the values in full_u[vh] for the correct vertex handles.
-        // (Tip: iterate over mesh vertices, not over system indices)
+            if (is_constrained_prop_[current_vertex]) {
+                assert(current_vertex_system_idx >= n_variables_);
+                full_u[current_vertex] = rhs_full.row(current_vertex_system_idx);
+            } else {
+                assert(current_vertex_system_idx < n_variables_);
+                full_u[current_vertex] = reduced_u.row(current_vertex_system_idx);
+            }
+        }
+
         return full_u;
     }
 
