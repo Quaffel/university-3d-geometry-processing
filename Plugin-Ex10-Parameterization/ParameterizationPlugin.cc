@@ -5,6 +5,7 @@
 #include <cassert>
 #include <limits>
 
+#include "OpenMesh/Core/Utils/Predicates.hh"
 #include "ui_ParameterizationToolbarBase.h"
 
 #define ASSIGNMENT_10_SOLUTION 1
@@ -582,12 +583,26 @@ struct ParamPOD : public PerObjectData {
     void relax_explicit()
     {
         const auto &edge_weights = lap_weights_.get_weights(config_.lap_type);
-        // ===== TODO: your code here ======
-        // Implement a Gauss-Seidel style relaxation of vertex texture coordinates:
-        // For all non-constrained vertices, move them to the weighted average
-        // of their neighbor's texture coordinate positions, using already-updated
-        // values where available. (This differs from how we implemented explicit smoothing:
-        // there we were careful to only use the values of the previous iteration!)
+
+        for (OpenMesh::SmartVertexHandle current_vertex : mesh_->vertices()) {
+            if (current_vertex.selected()) {
+                assert(current_vertex.is_boundary());
+                continue;
+            }
+
+            TriMesh::TexCoord2D current_weighted_midpoint(0, 0);
+            double total_edge_weights = 0;
+
+            for (OpenMesh::SmartHalfedgeHandle current_halfedge : current_vertex.outgoing_halfedges()) {
+                double current_halfedge_weight = edge_weights[current_halfedge.edge()];
+
+                total_edge_weights += current_halfedge_weight;
+                current_weighted_midpoint += current_halfedge_weight * mesh_->texcoord2D(current_halfedge.to());
+            }
+
+            TriMesh::TexCoord2D current_normalized_midpoint = (1.0 / total_edge_weights) * current_weighted_midpoint;
+            mesh_->set_texcoord2D(current_vertex, current_normalized_midpoint);
+        }
     }
     void update_vis_obj() {
         for (const auto vh: mesh_->vertices()) {
