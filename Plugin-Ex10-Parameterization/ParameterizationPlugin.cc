@@ -112,13 +112,54 @@ bool map_surface_boundary_to_circle(TriMesh &_mesh) {
         _mesh.status(vh).set_selected(false); // we use the `selected` status to denote fixed vertices
     }
 
+    std::vector<std::pair<OpenMesh::SmartHalfedgeHandle, double>> boundary;
+    double total_boundary_length = 0;
 
-    // ===== TODO: your code here: ======
-    // - Find the boundary of the mesh (print an error and return `false` if the number of boundary loops is not 1
-    // - Map the boundary to a circle of radius `g_radius` (global variable above. the value doesn't matter, it's picked for visualisation)
-    //   - approximately(!) preserve relative edge length; you can linearly map edge length to angle on the circle
-    //   - use _mesh.set_texcoord2D()
-    //   - set these fixed vertices as `selected`
+    for (OpenMesh::SmartHalfedgeHandle start_boundary_halfedge : _mesh.halfedges()) {
+        if (!start_boundary_halfedge.is_boundary()) {
+            continue;
+        }
+
+        if (_mesh.status(start_boundary_halfedge.to()).selected()) {
+            continue;
+        }
+
+        if (!boundary.empty()) {
+            std::cerr << "found more than one boundary" << std::endl;
+            return false;
+        }
+
+        OpenMesh::SmartHalfedgeHandle current_boundary_halfedge = start_boundary_halfedge;
+        do {
+            _mesh.status(current_boundary_halfedge).set_selected(true);
+            _mesh.status(current_boundary_halfedge.to()).set_selected(true);
+
+            double halfedge_length = _mesh.calc_edge_length(current_boundary_halfedge);
+
+            total_boundary_length += halfedge_length;
+            boundary.emplace_back(current_boundary_halfedge, halfedge_length);
+
+            current_boundary_halfedge = current_boundary_halfedge.next();
+            assert(current_boundary_halfedge.is_boundary());
+        } while (current_boundary_halfedge.idx() != start_boundary_halfedge.idx());
+    }
+
+    if (boundary.empty()) {
+        std::cerr << "found no boundary" << std::endl;
+        return false;
+    }
+
+    double radiant_length_ratio = 2.0 * M_PI / total_boundary_length;
+    double current_angle = 0;
+    for (auto [current_boundary_halfedge, current_boundary_halfedge_length] : boundary) {
+        OpenMesh::SmartVertexHandle current_vertex = current_boundary_halfedge.to();
+        _mesh.set_texcoord2D(
+            current_vertex, 
+            Vec2f(g_radius * std::sin(current_angle), g_radius * std::cos(current_angle))
+        );
+
+        current_angle += current_boundary_halfedge_length * radiant_length_ratio;
+    }
 
     return true;
 }
